@@ -1,3 +1,33 @@
+import { contextBridge, ipcRenderer } from 'electron'
+
+const workbench = {
+  getToday: () => ipcRenderer.invoke('wb:getToday'),
+  getRecord: (date: string) => ipcRenderer.invoke('wb:getRecord', date),
+  saveRecord: (input: unknown) => ipcRenderer.invoke('wb:saveRecord', input),
+  listRecords: (from: string, to: string) => ipcRenderer.invoke('wb:listRecords', from, to),
+  markReviewed: (date: string) => ipcRenderer.invoke('wb:markReviewed', date),
+  listScripts: (includeDisabled: boolean) => ipcRenderer.invoke('wb:listScripts', includeDisabled),
+  saveScript: (input: unknown) => ipcRenderer.invoke('wb:saveScript', input),
+  disableScript: (id: string) => ipcRenderer.invoke('wb:disableScript', id),
+  listHabits: () => ipcRenderer.invoke('wb:listHabits'),
+  saveHabit: (input: unknown) => ipcRenderer.invoke('wb:saveHabit', input),
+  deleteHabit: (id: string) => ipcRenderer.invoke('wb:deleteHabit', id),
+  listCustomers: (query?: string) => ipcRenderer.invoke('wb:listCustomers', query),
+  getCustomer: (id: string) => ipcRenderer.invoke('wb:getCustomer', id),
+  draftCrmNote: (input: { date?: string; customerId?: string }) => ipcRenderer.invoke('wb:draftCrmNote', input),
+  getSettings: () => ipcRenderer.invoke('wb:getSettings'),
+  saveSettings: (patch: unknown) => ipcRenderer.invoke('wb:saveSettings', patch),
+  getMcpStatus: () => ipcRenderer.invoke('wb:getMcpStatus'),
+  copyText: (text: string) => ipcRenderer.invoke('wb:copyText', text),
+  onOpen: (cb: (page: string) => void) => {
+    const listener = (_event: unknown, page: string) => cb(page)
+    ipcRenderer.on('workbench:open', listener)
+    return () => ipcRenderer.removeListener('workbench:open', listener)
+  },
+}
+
+contextBridge.exposeInMainWorld('workbench', workbench)
+
 // --------- Preload scripts loading ---------
 function domReady(condition: DocumentReadyState[] = ['complete', 'interactive']) {
   return new Promise(resolve => {

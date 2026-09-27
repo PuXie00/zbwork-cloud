@@ -1,3 +1,6 @@
+import type { Device } from './device'
+import type { WorkbenchApi } from '../workbench/api'
+
 /**
  * IPC 渲染进程 API 接口
  */
@@ -169,5 +172,6 @@ declare global {
   interface Window {
     ipcRenderer: IElectronAPI;
     plcAPI: IPlcAPI;
+    workbench: WorkbenchApi;
   }
 }
