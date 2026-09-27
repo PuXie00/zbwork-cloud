@@ -1,16 +1,21 @@
 import { randomUUID } from 'node:crypto'
 import { formatCrmNote } from './draft'
-import { getCustomer, listCustomers, type FetchLike } from './crm'
+import { cachedCustomers, type FetchLike, SilverbeneClient } from './crm'
 import { queryAll, queryOne, WorkbenchDb } from './db'
 import { dueReminders, type DueReminder } from './reminders'
 import { addDays, assertDate, assertHm, formatMinutes, parseHm, shanghaiClock } from './time'
 import {
   SCENES,
+  type Customer,
   type CustomerGetResult,
   type CustomerListResult,
   type DailyRecord,
   type KnowledgeHit,
+  type MetalPrice,
+  type OpenLead,
+  type ProjectInquiry,
   type ReplyHabit,
+  type SalesProject,
   type SaveHabitInput,
   type SaveRecordInput,
   type SaveScriptInput,
@@ -78,10 +83,14 @@ export class Workbench {
   private customerListQuery = ''
   private customerListResult: CustomerListResult | null = null
 
+  private readonly cloud: SilverbeneClient
+
   private constructor(
     private readonly store: WorkbenchDb,
-    private readonly fetchImpl: FetchLike,
-  ) {}
+    fetchImpl: FetchLike,
+  ) {
+    this.cloud = new SilverbeneClient(store, fetchImpl, () => this.getSettings())
+  }
 
   static async open(filename: string, fetchImpl: FetchLike = fetch): Promise<Workbench> {
     const store = await WorkbenchDb.open(filename)
@@ -109,13 +118,10 @@ export class Workbench {
       mcpPort: Number(this.setting('mcp_port')) || 3737,
       mcpToken: this.setting('mcp_token'),
       mcpEnabled: this.setting('mcp_enabled') !== '0',
-      crmBaseUrl: this.setting('crm_base_url'),
-      crmAuthType: this.setting('crm_auth_type') === 'header' ? 'header' : 'bearer',
-      crmToken: this.setting('crm_token'),
-      crmHeaderName: this.setting('crm_header_name') || 'Authorization',
+      crmBaseUrl: this.setting('crm_base_url') || 'https://admin.silverbene.com',
+      crmUsername: this.setting('crm_username'),
+      crmPassword: this.setting('crm_password'),
       crmTimeoutMs: Number(this.setting('crm_timeout_ms')) || 8000,
-      crmCustomersPath: this.setting('crm_customers_path') || '/customers',
-      crmCustomerPath: this.setting('crm_customer_path') || '/customers/{id}',
       remindWriteFirst: this.setting('remind_write_first') || '16:00',
       remindWriteSecond: this.setting('remind_write_second') || '17:00',
       remindReview: this.setting('remind_review') || '10:00',
@@ -124,6 +130,7 @@ export class Workbench {
   }
 
   updateSettings(patch: SettingsPatch): Settings {
+    const previous = this.getSettings()
     if (patch.mcpPort != null) {
       if (!Number.isInteger(patch.mcpPort) || patch.mcpPort < 1 || patch.mcpPort > 65535) {
         throw new Error('MCP 端口需为 1 到 65535 的整数')
@@ -136,35 +143,26 @@ export class Workbench {
     }
     if (patch.mcpEnabled != null) this.putSetting('mcp_enabled', patch.mcpEnabled ? '1' : '0')
     if (patch.crmBaseUrl != null) this.putSetting('crm_base_url', patch.crmBaseUrl.trim())
-    if (patch.crmAuthType != null) {
-      if (patch.crmAuthType !== 'bearer' && patch.crmAuthType !== 'header') throw new Error('鉴权方式无效')
-      this.putSetting('crm_auth_type', patch.crmAuthType)
-    }
-    if (patch.crmToken != null) this.putSetting('crm_token', patch.crmToken)
-    if (patch.crmHeaderName != null) {
-      const name = patch.crmHeaderName.trim()
-      if (!name) throw new Error('自定义头名称不能为空')
-      this.putSetting('crm_header_name', name)
-    }
+    if (patch.crmUsername != null) this.putSetting('crm_username', patch.crmUsername.trim())
+    if (patch.crmPassword != null) this.putSetting('crm_password', patch.crmPassword)
     if (patch.crmTimeoutMs != null) {
       if (!Number.isInteger(patch.crmTimeoutMs) || patch.crmTimeoutMs < 1000 || patch.crmTimeoutMs > 60000) {
         throw new Error('超时需为 1000 到 60000 毫秒')
       }
       this.putSetting('crm_timeout_ms', String(patch.crmTimeoutMs))
     }
-    if (patch.crmCustomersPath != null) this.putSetting('crm_customers_path', normalizePath(patch.crmCustomersPath))
-    if (patch.crmCustomerPath != null) {
-      const resourcePath = normalizePath(patch.crmCustomerPath)
-      if (!resourcePath.includes('{id}')) throw new Error('客户详情路径需要包含 {id}')
-      this.putSetting('crm_customer_path', resourcePath)
-    }
     if (patch.remindWriteFirst != null) this.putSetting('remind_write_first', assertHm(patch.remindWriteFirst))
     if (patch.remindWriteSecond != null) this.putSetting('remind_write_second', assertHm(patch.remindWriteSecond))
     if (patch.remindReview != null) this.putSetting('remind_review', assertHm(patch.remindReview))
     if (patch.openAtLogin != null) this.putSetting('open_at_login', patch.openAtLogin ? '1' : '0')
+    const next = this.getSettings()
+    const credentialsChanged = next.crmUsername !== previous.crmUsername
+      || next.crmPassword !== previous.crmPassword
+      || next.crmBaseUrl !== previous.crmBaseUrl
+    if (credentialsChanged) this.cloud.invalidate()
     this.customerListResult = null
     this.store.persist()
-    return this.getSettings()
+    return next
   }
 
   getRecord(date: string): DailyRecord | null {
@@ -322,6 +320,7 @@ export class Workbench {
   }
 
   async listCustomers(query = ''): Promise<CustomerListResult> {
+    if (!this.cloud.configured()) return { configured: false, source: 'unconfigured', customers: [] }
     const now = Date.now()
     if (
       this.customerListResult
@@ -331,17 +330,57 @@ export class Workbench {
     ) {
       return this.customerListResult
     }
-    const result = await listCustomers(this.store, this.getSettings(), this.fetchImpl, query)
-    if (result.source === 'live' || result.source === 'unconfigured') {
+    try {
+      const customers = await this.cloud.listCustomers(query)
+      const result: CustomerListResult = { configured: true, source: 'live', customers }
       this.customerListAt = now
       this.customerListQuery = query
       this.customerListResult = result
+      return result
+    } catch (error) {
+      const cached = cachedCustomers(this.store).filter(customer => customerMatches(customer, query))
+      const message = error instanceof Error ? error.message : '云端客户读取失败'
+      if (cachedCustomers(this.store).length > 0) {
+        return { configured: true, source: 'cache', customers: cached, message }
+      }
+      return { configured: true, source: 'error', customers: [], message }
     }
-    return result
   }
 
-  getCustomer(id: string): Promise<CustomerGetResult> {
-    return getCustomer(this.store, this.getSettings(), this.fetchImpl, id)
+  async getCustomer(id: string): Promise<CustomerGetResult> {
+    const customerId = id.trim()
+    if (!customerId) return { configured: this.cloud.configured(), source: 'error', customer: null, message: '缺少客户 id' }
+    if (!this.cloud.configured()) return { configured: false, source: 'unconfigured', customer: null }
+    try {
+      const customer = await this.cloud.getCustomer(customerId)
+      if (!customer) return { configured: true, source: 'error', customer: null, message: '云端没有这个客户' }
+      return { configured: true, source: 'live', customer }
+    } catch (error) {
+      const cached = cachedCustomers(this.store).find(customer => customer.id === customerId) ?? null
+      const message = error instanceof Error ? error.message : '云端客户读取失败'
+      if (cached) return { configured: true, source: 'cache', customer: cached, message }
+      return { configured: true, source: 'error', customer: null, message }
+    }
+  }
+
+  async listProjects(): Promise<SalesProject[]> {
+    if (!this.cloud.configured()) return []
+    return this.cloud.listProjects()
+  }
+
+  async listLeads(): Promise<OpenLead[]> {
+    if (!this.cloud.configured()) return []
+    return this.cloud.listLeads()
+  }
+
+  async listMetals(): Promise<MetalPrice[]> {
+    if (!this.cloud.configured()) return []
+    return this.cloud.listMetals()
+  }
+
+  async getProjectInquiry(projectId: string): Promise<ProjectInquiry | null> {
+    if (!this.cloud.configured()) return null
+    return this.cloud.getProjectInquiry(projectId)
   }
 
   async draftCrmNote(input: { date?: string; customerId?: string } = {}): Promise<{ text: string }> {
@@ -367,6 +406,7 @@ export class Workbench {
     const reviewAt = settings.remindReview
     const yesterdayDate = addDays(clock.date, -1)
     const customers = await this.listCustomers()
+    const cloud = await this.cloudSnapshot()
     return {
       date: clock.date,
       timeLabel: formatMinutes(clock.minutes),
@@ -376,6 +416,23 @@ export class Workbench {
       yesterdayDate,
       yesterday: this.getRecord(yesterdayDate),
       customers,
+      projects: cloud.projects,
+      leads: cloud.leads,
+      metals: cloud.metals,
+    }
+  }
+
+  private async cloudSnapshot(): Promise<{ projects: SalesProject[]; leads: OpenLead[]; metals: MetalPrice[] }> {
+    if (!this.cloud.configured()) return { projects: [], leads: [], metals: [] }
+    const [projects, leads, metals] = await Promise.allSettled([
+      this.cloud.listProjects(),
+      this.cloud.listLeads(),
+      this.cloud.listMetals(),
+    ])
+    return {
+      projects: projects.status === 'fulfilled' ? projects.value : [],
+      leads: leads.status === 'fulfilled' ? leads.value : [],
+      metals: metals.status === 'fulfilled' ? metals.value : [],
     }
   }
 
@@ -413,8 +470,8 @@ export class Workbench {
   }
 }
 
-function normalizePath(value: string): string {
-  const trimmed = value.trim()
-  if (!trimmed.startsWith('/')) throw new Error('路径需要以 / 开头')
-  return trimmed
+function customerMatches(customer: Customer, query: string): boolean {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return true
+  return `${customer.name} ${customer.company} ${customer.email} ${customer.country}`.toLowerCase().includes(needle)
 }

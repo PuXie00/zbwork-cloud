@@ -162,13 +162,33 @@ const tools = [
   },
   {
     name: 'list_customers',
-    description: '从云端 CRM 读取客户。未配置时返回空列表，不会编造客户。断网时若有缓存会标明 source=cache。不返回密钥。',
+    description: '读取云端私海客户。未配置账号时返回空列表，不会编造客户。断网时若有缓存会标明 source=cache。不读取邮箱，不连接 WhatsApp，不返回登录密码或令牌。',
     inputSchema: { type: 'object', properties: { query: { type: 'string' } } },
   },
   {
     name: 'get_customer',
-    description: '按云端客户 id 读取客户。不返回密钥。',
+    description: '按云端客户 id 读取客户。不读取邮箱，不连接 WhatsApp，不返回登录密码或令牌。',
     inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+  },
+  {
+    name: 'list_projects',
+    description: '读取当前账号的售前项目。只读。不读取邮箱，不连接 WhatsApp，不返回登录密码或令牌。',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'list_open_leads',
+    description: '读取待处理线索，来源只作为文字标签。不打开邮件或 WhatsApp，不返回登录密码或令牌。',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'list_metal_prices',
+    description: '读取云端金属参考价。只读。不返回登录密码或令牌。',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'get_project_inquiry',
+    description: '读取某个售前项目的初始询盘摘要。只读。不读取邮箱会话，不连接 WhatsApp，不返回登录密码或令牌。',
+    inputSchema: { type: 'object', properties: { projectId: { type: 'string' } }, required: ['projectId'] },
   },
   {
     name: 'draft_crm_note',
@@ -241,6 +261,14 @@ async function callTool(wb: Workbench, name: string, args: Record<string, unknow
       return toolResult(JSON.stringify(await wb.listCustomers(typeof args.query === 'string' ? args.query : '')))
     case 'get_customer':
       return toolResult(JSON.stringify(await wb.getCustomer(String(args.id ?? ''))))
+    case 'list_projects':
+      return toolResult(JSON.stringify(await wb.listProjects()))
+    case 'list_open_leads':
+      return toolResult(JSON.stringify(await wb.listLeads()))
+    case 'list_metal_prices':
+      return toolResult(JSON.stringify(await wb.listMetals()))
+    case 'get_project_inquiry':
+      return toolResult(JSON.stringify(await wb.getProjectInquiry(String(args.projectId ?? ''))))
     case 'draft_crm_note':
       return toolResult(JSON.stringify(await wb.draftCrmNote({
         date: typeof args.date === 'string' ? args.date : undefined,

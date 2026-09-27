@@ -62,6 +62,45 @@ export type Customer = {
   name: string
   company: string
   email: string
+  country: string
+  source: string
+}
+
+export type SalesProject = {
+  id: string
+  name: string
+  customerName: string
+  email: string
+  stage: string
+  updatedAt: string
+}
+
+export type OpenLead = {
+  id: string
+  name: string
+  source: string
+  need: string
+  productType: string
+  country: string
+}
+
+export type MetalPrice = {
+  code: string
+  purity: string
+  priceCnyPerG: string
+  quotedAt: string
+}
+
+export type ProjectInquiry = {
+  projectId: string
+  inquiryNo: string
+  customerName: string
+  productType: string
+  metal: string
+  quantity: string
+  language: string
+  message: string
+  summary: string
 }
 
 export type CustomerSource = 'unconfigured' | 'live' | 'cache' | 'error'
@@ -85,12 +124,9 @@ export type Settings = {
   mcpToken: string
   mcpEnabled: boolean
   crmBaseUrl: string
-  crmAuthType: 'bearer' | 'header'
-  crmToken: string
-  crmHeaderName: string
+  crmUsername: string
+  crmPassword: string
   crmTimeoutMs: number
-  crmCustomersPath: string
-  crmCustomerPath: string
   remindWriteFirst: string
   remindWriteSecond: string
   remindReview: string
@@ -108,6 +144,9 @@ export type TodaySnapshot = {
   yesterdayDate: string
   yesterday: DailyRecord | null
   customers: CustomerListResult
+  projects: SalesProject[]
+  leads: OpenLead[]
+  metals: MetalPrice[]
 }
 
 export type KnowledgeHit = {

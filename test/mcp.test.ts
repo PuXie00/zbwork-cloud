@@ -39,6 +39,8 @@ describe('MCP', () => {
       const tools = (listed.json?.result as { tools: { name: string }[] }).tools.map(tool => tool.name)
       expect(tools).toContain('draft_crm_note')
       expect(tools).toContain('search_knowledge')
+      expect(tools).toEqual(expect.arrayContaining(['list_projects', 'list_open_leads', 'list_metal_prices', 'get_project_inquiry']))
+      expect(tools.join(' ')).not.toMatch(/email|whatsapp/i)
 
       const saved = await rpc(server.port, token, {
         jsonrpc: '2.0',
@@ -66,6 +68,14 @@ describe('MCP', () => {
         params: { name: 'save_daily_record', arguments: { date: '2026-09-28' } },
       })
       expect((empty.json?.result as { isError: boolean }).isError).toBe(true)
+
+      const projects = await rpc(server.port, token, {
+        jsonrpc: '2.0',
+        id: 6,
+        method: 'tools/call',
+        params: { name: 'list_projects', arguments: {} },
+      })
+      expect((projects.json?.result as { content: { text: string }[] }).content[0].text).toBe('[]')
     } finally {
       await server.close()
       wb.close()

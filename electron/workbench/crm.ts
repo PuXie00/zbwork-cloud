@@ -1,153 +1,290 @@
-import type { Customer, CustomerGetResult, CustomerListResult, Settings } from './types'
+import type { Customer, CustomerGetResult, CustomerListResult, MetalPrice, OpenLead, ProjectInquiry, SalesProject, Settings } from './types'
 import { queryAll, queryOne, type WorkbenchDb } from './db'
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
 
-function configured(settings: Settings): boolean {
-  return settings.crmBaseUrl.trim().length > 0
+const DEFAULT_BASE = 'https://admin.silverbene.com'
+
+export function cloudConfigured(settings: Settings): boolean {
+  return settings.crmUsername.trim().length > 0 && settings.crmPassword.length > 0
 }
 
-function authHeaders(settings: Settings): Record<string, string> {
-  if (!settings.crmToken) return {}
-  if (settings.crmAuthType === 'header') {
-    return { [settings.crmHeaderName || 'Authorization']: settings.crmToken }
-  }
-  return { Authorization: `Bearer ${settings.crmToken}` }
+function apiUrl(base: string, path: string): string {
+  const root = (base.trim() || DEFAULT_BASE).replace(/\/$/, '')
+  const prefix = root.endsWith('/api/admin') ? root : `${root}/api/admin`
+  return `${prefix}${path.startsWith('/') ? path : `/${path}`}`
 }
 
-function joinUrl(base: string, resourcePath: string): string {
-  const root = base.trim().replace(/\/$/, '')
-  const path = resourcePath.startsWith('/') ? resourcePath : `/${resourcePath}`
-  return `${root}${path}`
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : null
 }
 
-export function readCustomer(raw: unknown): Customer | null {
-  if (!raw || typeof raw !== 'object') return null
-  const record = raw as Record<string, unknown>
-  const id = record.id ?? record.customerId ?? record.Id
-  if (id == null || String(id).trim() === '') return null
-  const name = record.name ?? record.customerName ?? record.Name ?? ''
-  const company = record.company ?? record.companyName ?? record.Company ?? ''
-  const email = record.email ?? record.mail ?? record.Email ?? ''
+function text(value: unknown): string {
+  return value == null ? '' : String(value)
+}
+
+export function mapCustomer(raw: unknown): Customer | null {
+  const record = asRecord(raw)
+  if (!record || record.id == null || text(record.id).trim() === '') return null
   return {
-    id: String(id),
-    name: String(name),
-    company: String(company),
-    email: String(email),
+    id: text(record.id),
+    name: text(record.name),
+    company: text(record.company),
+    email: text(record.email),
+    country: text(record.country),
+    source: text(record.source),
   }
 }
 
-export function readCustomerList(payload: unknown): Customer[] {
-  const list = Array.isArray(payload)
-    ? payload
-    : payload && typeof payload === 'object' && Array.isArray((payload as { customers?: unknown }).customers)
-      ? (payload as { customers: unknown[] }).customers
-      : payload && typeof payload === 'object' && Array.isArray((payload as { data?: unknown }).data)
-        ? (payload as { data: unknown[] }).data
-        : null
-  if (!list) throw new Error('云端客户列表格式无法识别')
-  return list.map(readCustomer).filter((item): item is Customer => item !== null)
+function customerRows(data: unknown): unknown[] {
+  const page = asRecord(asRecord(data)?.data)
+  const rows = page?.data
+  if (Array.isArray(rows)) return rows
+  if (Array.isArray(data)) return data
+  throw new Error('云端客户列表格式无法识别')
 }
 
-export function readCustomerOne(payload: unknown): Customer | null {
-  if (payload && typeof payload === 'object' && 'customer' in payload) {
-    return readCustomer((payload as { customer: unknown }).customer)
+function mapProject(raw: unknown): SalesProject | null {
+  const record = asRecord(raw)
+  if (!record || record.id == null) return null
+  const stage = asRecord(record.funnel_stage)
+  return {
+    id: text(record.id),
+    name: text(record.name),
+    customerName: text(record.customer_name),
+    email: text(record.customer_email),
+    stage: text(stage?.stage_label),
+    updatedAt: text(record.updated_at),
   }
-  if (payload && typeof payload === 'object' && 'data' in payload && !Array.isArray((payload as { data: unknown }).data)) {
-    return readCustomer((payload as { data: unknown }).data)
-  }
-  return readCustomer(payload)
 }
 
-function cacheCustomers(store: WorkbenchDb, customers: Customer[], cachedAt: string): void {
+function mapLead(raw: unknown): OpenLead | null {
+  const record = asRecord(raw)
+  if (!record || record.id == null) return null
+  return {
+    id: text(record.id),
+    name: text(record.name),
+    source: text(record.source),
+    need: text(record.need),
+    productType: text(record.product_type),
+    country: text(record.country),
+  }
+}
+
+function mapMetal(raw: unknown): MetalPrice | null {
+  const record = asRecord(raw)
+  if (!record || !text(record.metal_code)) return null
+  return {
+    code: text(record.metal_code),
+    purity: text(record.purity),
+    priceCnyPerG: text(record.price_rmb_per_g),
+    quotedAt: text(record.quoted_at),
+  }
+}
+
+export function cacheCustomers(store: WorkbenchDb, customers: Customer[], cachedAt: string): void {
   store.db.run('DELETE FROM customer_cache')
   for (const customer of customers) {
     store.db.run(
-      'INSERT INTO customer_cache (id, name, company, email, cached_at) VALUES (?, ?, ?, ?, ?)',
-      [customer.id, customer.name, customer.company, customer.email, cachedAt],
+      'INSERT INTO customer_cache (id, name, company, email, country, source, cached_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [customer.id, customer.name, customer.company, customer.email, customer.country, customer.source, cachedAt],
     )
   }
   store.persist()
 }
 
-function cachedCustomers(store: WorkbenchDb): Customer[] {
-  return queryAll(store.db, 'SELECT id, name, company, email FROM customer_cache ORDER BY name, id').map(row => ({
-    id: String(row.id),
-    name: String(row.name ?? ''),
-    company: String(row.company ?? ''),
-    email: String(row.email ?? ''),
+export function cachedCustomers(store: WorkbenchDb): Customer[] {
+  return queryAll(store.db, 'SELECT id, name, company, email, country, source FROM customer_cache ORDER BY name, id').map(row => ({
+    id: text(row.id),
+    name: text(row.name),
+    company: text(row.company),
+    email: text(row.email),
+    country: text(row.country),
+    source: text(row.source),
   }))
 }
 
-function cachedCustomer(store: WorkbenchDb, id: string): Customer | null {
-  const row = queryOne(store.db, 'SELECT id, name, company, email FROM customer_cache WHERE id = ?', [id])
-  if (!row) return null
-  return {
-    id: String(row.id),
-    name: String(row.name ?? ''),
-    company: String(row.company ?? ''),
-    email: String(row.email ?? ''),
+export class SilverbeneClient {
+  private loginFlight: Promise<void> | null = null
+
+  constructor(
+    private readonly store: WorkbenchDb,
+    private readonly fetchImpl: FetchLike,
+    private readonly settings: () => Settings,
+  ) {}
+
+  configured(): boolean {
+    return cloudConfigured(this.settings())
+  }
+
+  invalidate(): void {
+    this.writeSetting('crm_access_token', '')
+    this.writeSetting('crm_user_id', '')
+    this.store.persist()
+  }
+
+  async listCustomers(query = ''): Promise<Customer[]> {
+    await this.ensureToken(false)
+    const ownerId = this.readSetting('crm_user_id')
+    const body: Record<string, unknown> = { page: 1, page_size: 100, pool_type: 'private', level: '' }
+    if (ownerId) body.owner_id = Number(ownerId)
+    const data = await this.post('/xiaoman/customer/list', body)
+    const customers = customerRows(data).map(mapCustomer).filter((item): item is Customer => item !== null)
+    cacheCustomers(this.store, customers, new Date().toISOString())
+    const needle = query.trim().toLowerCase()
+    if (!needle) return customers
+    return customers.filter(item => `${item.name} ${item.company} ${item.email} ${item.country}`.toLowerCase().includes(needle))
+  }
+
+  async getCustomer(id: string): Promise<Customer | null> {
+    const data = await this.post('/xiaoman/customer/detail', { id: Number(id) || id })
+    return mapCustomer(data)
+  }
+
+  async listProjects(): Promise<SalesProject[]> {
+    const data = await this.post('/pre_sales_v2/project/funnel-snapshot', {})
+    const list = asRecord(data)?.list
+    if (!Array.isArray(list)) throw new Error('云端项目列表格式无法识别')
+    return list.map(mapProject).filter((item): item is SalesProject => item !== null)
+  }
+
+  async listLeads(limit = 20): Promise<OpenLead[]> {
+    const data = await this.post('/lky_workbench/leads', { limit })
+    const list = asRecord(data)?.list
+    if (!Array.isArray(list)) throw new Error('云端线索列表格式无法识别')
+    return list.map(mapLead).filter((item): item is OpenLead => item !== null)
+  }
+
+  async listMetals(): Promise<MetalPrice[]> {
+    const data = await this.post('/lky_oem_pricing_ref/metal/list', {})
+    const rows = asRecord(data)?.rows
+    if (!Array.isArray(rows)) throw new Error('金属价格格式无法识别')
+    return rows.map(mapMetal).filter((item): item is MetalPrice => item !== null)
+  }
+
+  async getProjectInquiry(projectId: string): Promise<ProjectInquiry | null> {
+    const linked = await this.post('/lky_oem_inquiry/from-project', { project_id: Number(projectId) || projectId })
+    const inquiryId = asRecord(asRecord(linked)?.inquiry)?.id
+    if (inquiryId == null) return null
+    const detail = asRecord(await this.post('/lky_oem_inquiry/detail', { id: inquiryId }))
+    if (!detail) return null
+    return {
+      projectId,
+      inquiryNo: text(detail.inquiry_no),
+      customerName: text(detail.customer_name),
+      productType: text(detail.customer_product_type),
+      metal: text(detail.customer_metal_material),
+      quantity: text(detail.customer_quantity),
+      language: text(detail.customer_language),
+      message: text(detail.customer_message),
+      summary: text(detail.ai_summary),
+    }
+  }
+
+  private async post(path: string, body: unknown, allowRetry = true): Promise<unknown> {
+    const token = await this.ensureToken(false)
+    const response = await this.fetchImpl(apiUrl(this.settings().crmBaseUrl, path), {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(body ?? {}),
+      signal: AbortSignal.timeout(this.settings().crmTimeoutMs),
+    })
+    const json = await readJson(response)
+    if (isExpired(response.status, json)) {
+      if (!allowRetry) throw new Error('云端登录已过期，重新登录失败')
+      await this.ensureToken(true)
+      return this.post(path, body, false)
+    }
+    if (response.status >= 400) throw new Error('云端接口请求失败')
+    if (!json || json.code !== 20000) throw new Error(text(json?.message) || '云端接口返回失败')
+    return json.data
+  }
+
+  private async ensureToken(force: boolean): Promise<string> {
+    if (!force) {
+      const existing = this.readSetting('crm_access_token')
+      if (existing) return existing
+    } else {
+      this.writeSetting('crm_access_token', '')
+      this.store.persist()
+    }
+    if (!this.loginFlight) {
+      this.loginFlight = this.login().finally(() => {
+        this.loginFlight = null
+      })
+    }
+    await this.loginFlight
+    const token = this.readSetting('crm_access_token')
+    if (!token) throw new Error('云端登录失败')
+    return token
+  }
+
+  private async login(): Promise<void> {
+    const settings = this.settings()
+    if (!cloudConfigured(settings)) throw new Error('未配置云端账号')
+    const response = await this.fetchImpl(apiUrl(settings.crmBaseUrl, '/login/do_login'), {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: settings.crmUsername.trim(), password: settings.crmPassword }),
+      signal: AbortSignal.timeout(settings.crmTimeoutMs),
+    })
+    const json = await readJson(response)
+    const token = text(asRecord(json?.data)?.token)
+    if (!response.ok || json?.code !== 20000 || !token) {
+      throw new Error(text(json?.message) || '云端登录失败')
+    }
+    this.writeSetting('crm_access_token', token)
+    this.store.persist()
+    try {
+      const info = await this.fetchImpl(apiUrl(settings.crmBaseUrl, '/login/admin_info'), {
+        method: 'GET',
+        headers: { Accept: 'application/json', Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(settings.crmTimeoutMs),
+      })
+      const infoJson = await readJson(info)
+      const userId = asRecord(infoJson?.data)?.id
+      if (info.ok && infoJson?.code === 20000 && userId != null) {
+        this.writeSetting('crm_user_id', text(userId))
+      }
+    } catch {
+      // 登录已成功。用户 id 缺失时客户列表仍按当前账号读取。
+    }
+    this.store.persist()
+  }
+
+  private readSetting(key: string): string {
+    return text(queryOne(this.store.db, 'SELECT value FROM settings WHERE key = ?', [key])?.value)
+  }
+
+  private writeSetting(key: string, value: string): void {
+    this.store.db.run(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+      [key, value],
+    )
   }
 }
 
-async function requestJson(url: string, settings: Settings, fetchImpl: FetchLike): Promise<unknown> {
-  const response = await fetchImpl(url, {
-    method: 'GET',
-    headers: {
-      Accept: 'application/json',
-      ...authHeaders(settings),
-    },
-    signal: AbortSignal.timeout(settings.crmTimeoutMs),
-  })
-  if (!response.ok) throw new Error(`云端 CRM 返回 ${response.status}`)
-  return response.json()
-}
-
-export async function listCustomers(
-  store: WorkbenchDb,
-  settings: Settings,
-  fetchImpl: FetchLike,
-  query = '',
-): Promise<CustomerListResult> {
-  if (!configured(settings)) {
-    return { configured: false, source: 'unconfigured', customers: [] }
-  }
-  const url = new URL(joinUrl(settings.crmBaseUrl, settings.crmCustomersPath))
-  if (query.trim()) url.searchParams.set('q', query.trim())
+async function readJson(response: Response): Promise<{ code?: number; message?: unknown; data?: unknown } | null> {
   try {
-    const payload = await requestJson(url.toString(), settings, fetchImpl)
-    const customers = readCustomerList(payload)
-    if (!query.trim()) cacheCustomers(store, customers, new Date().toISOString())
-    return { configured: true, source: 'live', customers }
-  } catch (error) {
-    const customers = cachedCustomers(store)
-    const message = error instanceof Error ? error.message : '云端 CRM 请求失败'
-    if (customers.length > 0) return { configured: true, source: 'cache', customers, message }
-    return { configured: true, source: 'error', customers: [], message }
+    return await response.json() as { code?: number; message?: unknown; data?: unknown }
+  } catch {
+    return null
   }
 }
 
-export async function getCustomer(
-  store: WorkbenchDb,
-  settings: Settings,
-  fetchImpl: FetchLike,
-  id: string,
-): Promise<CustomerGetResult> {
-  if (!configured(settings)) {
-    return { configured: false, source: 'unconfigured', customer: null }
-  }
-  const path = settings.crmCustomerPath.replaceAll('{id}', encodeURIComponent(id))
-  try {
-    const payload = await requestJson(joinUrl(settings.crmBaseUrl, path), settings, fetchImpl)
-    const customer = readCustomerOne(payload)
-    if (!customer) return { configured: true, source: 'live', customer: null, message: '云端没有这个客户' }
-    const existing = cachedCustomers(store).filter(item => item.id !== customer.id)
-    cacheCustomers(store, [...existing, customer], new Date().toISOString())
-    return { configured: true, source: 'live', customer }
-  } catch (error) {
-    const customer = cachedCustomer(store, id)
-    const message = error instanceof Error ? error.message : '云端 CRM 请求失败'
-    if (customer) return { configured: true, source: 'cache', customer, message }
-    return { configured: true, source: 'error', customer: null, message }
-  }
+function isExpired(status: number, json: { message?: unknown } | null): boolean {
+  if (status === 401 || status === 403) return true
+  return text(json?.message) === 'Unauthenticated.'
+}
+
+export function emptyCustomers(configured: boolean): CustomerListResult {
+  return { configured, source: configured ? 'error' : 'unconfigured', customers: [] }
+}
+
+export function customerMiss(configured: boolean): CustomerGetResult {
+  return { configured, source: configured ? 'error' : 'unconfigured', customer: null }
 }

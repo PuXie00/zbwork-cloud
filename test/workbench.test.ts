@@ -84,50 +84,222 @@ describe('知识库', () => {
 })
 
 describe('云端 CRM', () => {
-  it('未配置时不编造客户，也不发请求', async () => {
+  it('未配置用户名或密码时不编造客户，也不发请求', async () => {
     let called = false
     const wb = await openWorkbench(async () => {
       called = true
       throw new Error('不应该请求')
     })
-    wb.updateSettings({ crmToken: 'crm-secret-token' })
+    wb.updateSettings({ crmBaseUrl: 'https://admin.example.test' })
     const list = await wb.listCustomers()
     expect(list).toEqual({ configured: false, source: 'unconfigured', customers: [] })
+    expect(await wb.listProjects()).toEqual([])
+    expect(await wb.getProjectInquiry('633')).toBeNull()
     expect(called).toBe(false)
     const note = await wb.draftCrmNote({ date: '2026-09-26' })
     expect(note.text).toContain('当日记录：无')
-    expect(JSON.stringify(note)).not.toContain('crm-secret-token')
     wb.close()
   })
 
-  it('配置后读取云端客户，断网时用缓存，粘贴稿不含密钥', async () => {
-    const secret = 'crm-secret-token'
-    const filename = path.join(os.tmpdir(), `zbwork-seed-${Date.now()}.sqlite`)
+  it('登录一次后复用会话，过期才重登，断网用缓存，结果不含密码', async () => {
+    const password = 'secret-pass'
+    const cloud = createCloud(password)
+    const filename = path.join(os.tmpdir(), `zbwork-cloud-${Date.now()}-${Math.random().toString(16).slice(2)}.sqlite`)
     files.push(filename)
-    const live = await Workbench.open(filename, async (url, init) => {
-      if ((init?.method ?? 'GET') !== 'GET') throw new Error('只允许读取')
-      if (String(url).includes('/customers/c1')) {
-        return new Response(JSON.stringify({ customer: { id: 'c1', customerName: 'Mia', companyName: 'Lumen', mail: 'mia@lumen.test' } }), { status: 200 })
-      }
-      return new Response(JSON.stringify([{ id: 'c1', name: 'Mia', company: 'Lumen', email: 'mia@lumen.test' }]), { status: 200 })
+    const live = await Workbench.open(filename, cloud.fetchImpl)
+    live.updateSettings({
+      crmBaseUrl: 'https://admin.example.test',
+      crmUsername: 'seller',
+      crmPassword: password,
     })
-    live.updateSettings({ crmBaseUrl: 'https://crm.example.test/api', crmToken: secret })
+
     const list = await live.listCustomers()
     expect(list.source).toBe('live')
-    expect(list.customers[0].name).toBe('Mia')
-    expect(JSON.stringify(list)).not.toContain(secret)
+    expect(list.customers.map(item => item.name)).toEqual(['Mia', 'Owen'])
+    expect(list.customers[0].country).toBe('US')
+    expect(cloud.logins).toBe(1)
+    expect(cloud.ownerIds).toEqual([42])
+    expect(JSON.stringify(list)).not.toContain(password)
+    expect(JSON.stringify(list)).not.toContain('session-')
+
+    const again = await live.listCustomers()
+    expect(again.customers).toHaveLength(2)
+    expect(cloud.customerLists).toBe(1)
+
+    const filtered = await live.listCustomers('Mia')
+    expect(filtered.customers.map(item => item.id)).toEqual(['7'])
+    expect(cloud.logins).toBe(1)
+
+    const snapshot = await live.todaySnapshot(new Date('2026-09-27T02:00:00.000Z'))
+    expect(snapshot.projects[0]?.stage).toContain('未回复')
+    expect(snapshot.leads[0]?.source).toBe('whatsapp')
+    expect(snapshot.metals.map(item => item.code)).toEqual(['Ag', 'Au'])
+    expect(cloud.logins).toBe(1)
+    expect(JSON.stringify(snapshot)).not.toContain(password)
+
+    cloud.armExpiry()
+    const refreshed = await live.listCustomers('Owen')
+    expect(refreshed.customers.map(item => item.id)).toEqual(['8'])
+    expect(cloud.logins).toBe(2)
+
+    live.updateSettings({ crmUsername: 'seller', crmPassword: password, remindReview: '10:30' })
+    await live.listCustomers('US')
+    expect(cloud.logins).toBe(2)
+
+    await expect(live.getProjectInquiry('')).rejects.toThrow('缺少 project_id')
+    expect(cloud.logins).toBe(2)
+    const inquiry = await live.getProjectInquiry('633')
+    expect(inquiry?.summary).toBe('银戒询价')
+    expect(inquiry?.message).toContain('silver ring')
+    expect(JSON.stringify(inquiry)).not.toContain(password)
+
+    live.updateSettings({ crmPassword: 'next-secret' })
+    cloud.password = 'next-secret'
+    await live.listCustomers('Mia')
+    expect(cloud.logins).toBe(3)
     live.close()
 
-    const offline = await Workbench.open(filename, async () => {
-      throw new Error('网络中断')
-    })
+    const reused = await Workbench.open(filename, cloud.fetchImpl)
+    const reusedList = await reused.listCustomers('Lumen')
+    expect(reusedList.source).toBe('live')
+    expect(reusedList.customers[0]?.name).toBe('Mia')
+    expect(cloud.logins).toBe(3)
+    reused.close()
+
+    cloud.dropNetwork()
+    const offline = await Workbench.open(filename, cloud.fetchImpl)
     const offlineList = await offline.listCustomers()
     expect(offlineList.source).toBe('cache')
-    expect(offlineList.customers[0].name).toBe('Mia')
-    const note = await offline.draftCrmNote({ date: '2026-09-26', customerId: 'c1' })
+    expect(offlineList.customers.map(item => item.name)).toEqual(['Mia', 'Owen'])
+    expect(offlineList.customers[0]?.country).toBe('US')
+    const note = await offline.draftCrmNote({ date: '2026-09-26', customerId: '7' })
     expect(note.text).toContain('Mia')
-    expect(note.text).toContain('id:c1')
-    expect(JSON.stringify(note)).not.toContain(secret)
+    expect(note.text).toContain('id:7')
+    expect(JSON.stringify(note)).not.toContain('next-secret')
+    expect(JSON.stringify(note)).not.toContain(password)
+    expect(cloud.logins).toBe(3)
     offline.close()
   })
 })
+
+function createCloud(initialPassword: string) {
+  const state = {
+    password: initialPassword,
+    logins: 0,
+    customerLists: 0,
+    ownerIds: [] as unknown[],
+    activeToken: '',
+    rejectOnce: false,
+    offline: false,
+  }
+  const fetchImpl: typeof fetch = async (url, init) => {
+    if (state.offline) throw new Error('网络中断')
+    const href = String(url)
+    const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {}
+    const headers = new Headers(init?.headers)
+    const auth = headers.get('authorization') ?? ''
+    if (href.endsWith('/login/do_login')) {
+      state.logins += 1
+      if (body.password !== state.password) {
+        return cloudJson({ code: 20001, message: '账号或密码错误' })
+      }
+      state.activeToken = `session-${state.logins}`
+      return cloudJson({ code: 20000, data: { token: state.activeToken }, message: 'success' })
+    }
+    if (href.endsWith('/login/admin_info')) {
+      if (auth !== `Bearer ${state.activeToken}`) return cloudJson({ message: 'Unauthenticated.' }, 401)
+      return cloudJson({ code: 20000, data: { id: 42, name: 'Josie' } })
+    }
+    if (state.rejectOnce) {
+      state.rejectOnce = false
+      return cloudJson({ message: 'Unauthenticated.' }, 401)
+    }
+    if (auth !== `Bearer ${state.activeToken}`) return cloudJson({ message: 'Unauthenticated.' }, 401)
+    if (href.endsWith('/xiaoman/customer/list')) {
+      state.customerLists += 1
+      state.ownerIds.push(body.owner_id)
+      return cloudJson({
+        code: 20000,
+        data: {
+          data: {
+            data: [
+              { id: 7, name: 'Mia', email: 'mia@example.test', company: 'Lumen', country: 'US', source: 'site' },
+              { id: 8, name: 'Owen', email: 'owen@example.test', company: 'North', country: 'DE', source: 'fair' },
+            ],
+          },
+        },
+      })
+    }
+    if (href.endsWith('/xiaoman/customer/detail')) {
+      return cloudJson({ code: 20000, data: { id: body.id, name: 'Mia', email: 'mia@example.test', company: 'Lumen', country: 'US', source: 'site' } })
+    }
+    if (href.endsWith('/pre_sales_v2/project/funnel-snapshot')) {
+      return cloudJson({
+        code: 20000,
+        data: {
+          list: [{
+            id: 633,
+            name: 'ZYH_MT_20260927',
+            customer_name: 'Mia',
+            customer_email: 'mia@example.test',
+            updated_at: '2026-09-27',
+            funnel_stage: { stage_label: 'OEM初始询盘-未回复' },
+          }],
+        },
+      })
+    }
+    if (href.endsWith('/lky_workbench/leads')) {
+      return cloudJson({
+        code: 20000,
+        data: {
+          list: [{ id: 3, name: 'Leah', country: 'UK', source: 'whatsapp', need: 'ring', product_type: 'ring' }],
+          total: 1,
+        },
+      })
+    }
+    if (href.endsWith('/lky_oem_pricing_ref/metal/list')) {
+      return cloudJson({
+        code: 20000,
+        data: {
+          rows: [
+            { metal_code: 'Ag', purity: '925', price_rmb_per_g: '8.2', quoted_at: '2026-09-27' },
+            { metal_code: 'Au', purity: '750', price_rmb_per_g: '580', quoted_at: '2026-09-27' },
+          ],
+        },
+      })
+    }
+    if (href.endsWith('/lky_oem_inquiry/from-project')) {
+      if (!body.project_id) return cloudJson({ code: 20001, message: '缺少 project_id' })
+      return cloudJson({ code: 20000, data: { inquiry: { id: 15 } } })
+    }
+    if (href.endsWith('/lky_oem_inquiry/detail')) {
+      return cloudJson({
+        code: 20000,
+        data: {
+          inquiry_no: 'IN-15',
+          customer_name: 'Mia',
+          customer_product_type: 'ring',
+          customer_metal_material: '925',
+          customer_quantity: '50',
+          customer_language: 'en',
+          customer_message: 'Need a silver ring quote.',
+          ai_summary: '银戒询价',
+        },
+      })
+    }
+    return cloudJson({ code: 20001, message: '未知接口' }, 404)
+  }
+  return {
+    fetchImpl,
+    get logins() { return state.logins },
+    get customerLists() { return state.customerLists },
+    get ownerIds() { return state.ownerIds },
+    set password(value: string) { state.password = value },
+    armExpiry() { state.rejectOnce = true },
+    dropNetwork() { state.offline = true },
+  }
+}
+
+function cloudJson(payload: unknown, status = 200): Response {
+  return new Response(JSON.stringify(payload), { status, headers: { 'Content-Type': 'application/json' } })
+}

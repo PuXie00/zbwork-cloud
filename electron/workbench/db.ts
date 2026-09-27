@@ -86,9 +86,17 @@ CREATE TABLE IF NOT EXISTS customer_cache (
   name TEXT NOT NULL,
   company TEXT NOT NULL,
   email TEXT NOT NULL,
+  country TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT '',
   cached_at TEXT NOT NULL
 );
 `
+
+function ensureCustomerCacheColumns(db: SqlDatabase): void {
+  const columns = new Set(queryAll(db, 'PRAGMA table_info(customer_cache)').map(row => String(row.name)))
+  if (!columns.has('country')) db.run("ALTER TABLE customer_cache ADD COLUMN country TEXT NOT NULL DEFAULT ''")
+  if (!columns.has('source')) db.run("ALTER TABLE customer_cache ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+}
 
 export class WorkbenchDb {
   private constructor(
@@ -104,6 +112,7 @@ export class WorkbenchDb {
     const db = existing ? new SQL.Database(existing) : new SQL.Database()
     const store = new WorkbenchDb(db, memory ? null : filename)
     db.run(SCHEMA)
+    ensureCustomerCacheColumns(db)
     store.ensureDefaults()
     store.persist()
     return store
@@ -127,13 +136,10 @@ export class WorkbenchDb {
       mcp_port: '3737',
       mcp_token: randomBytes(24).toString('base64url'),
       mcp_enabled: '1',
-      crm_base_url: '',
-      crm_auth_type: 'bearer',
-      crm_token: '',
-      crm_header_name: 'Authorization',
+      crm_base_url: 'https://admin.silverbene.com',
+      crm_username: '',
+      crm_password: '',
       crm_timeout_ms: '8000',
-      crm_customers_path: '/customers',
-      crm_customer_path: '/customers/{id}',
       remind_write_first: '16:00',
       remind_write_second: '17:00',
       remind_review: '10:00',

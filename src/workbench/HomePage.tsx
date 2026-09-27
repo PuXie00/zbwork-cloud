@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { TodaySnapshot } from '../../electron/workbench/types'
+import type { MetalPrice, SalesProject, TodaySnapshot } from '../../electron/workbench/types'
 import { getWorkbench } from './api'
 import { Button, ErrorText } from './ui'
 
@@ -89,6 +89,8 @@ export function HomePage({ onWrite }: { onWrite: () => void }) {
         <CustomerSource snapshot={data} />
       </section>
 
+      <CloudWork snapshot={data} />
+
       <section className="space-y-3">
         <div className="flex items-center gap-3">
           <h2 className="text-lg font-semibold">CRM 粘贴稿</h2>
@@ -111,6 +113,69 @@ function RecordBody({ record }: { record: NonNullable<TodaySnapshot['today']> })
       <div className="md:col-span-2"><dt className="text-stone-500">备注</dt><dd>{record.notes || '无'}</dd></div>
     </dl>
   )
+}
+
+function CloudWork({ snapshot }: { snapshot: TodaySnapshot }) {
+  if (!snapshot.customers.configured) {
+    return <p className="text-sm text-stone-500">到设置填写云端用户名和密码后，这里显示未回复项目、线索和金银价。</p>
+  }
+  const unreplied = snapshot.projects.filter(project => project.stage.includes('未回复')).slice(0, 8)
+  const featured = snapshot.metals.filter(isGoldOrSilver)
+  const metals = featured.length > 0 ? featured : snapshot.metals.slice(0, 6)
+  return (
+    <div className="grid gap-6 lg:grid-cols-3">
+      <section className="space-y-3" aria-label="未回复项目">
+        <h2 className="text-lg font-semibold">未回复项目</h2>
+        {unreplied.length === 0 && <p className="text-sm text-stone-500">没有未回复项目。</p>}
+        <ul className="divide-y divide-stone-200 rounded-md border border-stone-200 bg-white">
+          {unreplied.map(project => <ProjectRow key={project.id} project={project} />)}
+        </ul>
+      </section>
+      <section className="space-y-3" aria-label="待处理线索">
+        <h2 className="text-lg font-semibold">待处理线索</h2>
+        <p className="text-sm text-stone-700">{snapshot.leads.length} 条</p>
+        <ul className="divide-y divide-stone-200 rounded-md border border-stone-200 bg-white">
+          {snapshot.leads.slice(0, 5).map(lead => (
+            <li key={lead.id} className="px-3 py-2 text-sm">
+              <span className="font-medium">{lead.name || lead.id}</span>
+              <span className="mt-1 block text-stone-500">{[lead.source, lead.productType, lead.country].filter(Boolean).join(' · ') || lead.need || '无摘要'}</span>
+            </li>
+          ))}
+        </ul>
+      </section>
+      <section className="space-y-3" aria-label="金银价">
+        <h2 className="text-lg font-semibold">金银价</h2>
+        {metals.length === 0 && <p className="text-sm text-stone-500">暂无金属价格。</p>}
+        <ul className="divide-y divide-stone-200 rounded-md border border-stone-200 bg-white">
+          {metals.map(metal => <MetalRow key={`${metal.code}-${metal.purity}`} metal={metal} />)}
+        </ul>
+      </section>
+    </div>
+  )
+}
+
+function ProjectRow({ project }: { project: SalesProject }) {
+  return (
+    <li className="px-3 py-2 text-sm">
+      <span className="font-medium">{project.customerName || project.name || project.id}</span>
+      <span className="mt-1 block text-stone-500">{project.stage || '无阶段'}</span>
+    </li>
+  )
+}
+
+function MetalRow({ metal }: { metal: MetalPrice }) {
+  const highlighted = isGoldOrSilver(metal)
+  return (
+    <li className={`px-3 py-2 text-sm ${highlighted ? 'bg-amber-50' : ''}`}>
+      <span className="font-medium">{metal.code} {metal.purity}</span>
+      <span className="mt-1 block text-stone-600">{metal.priceCnyPerG || '无报价'} 元/克</span>
+    </li>
+  )
+}
+
+const isGoldOrSilver = (metal: MetalPrice): boolean => {
+  const label = `${metal.code} ${metal.purity}`.toLowerCase()
+  return label.includes('金') || label.includes('银') || label.includes('gold') || label.includes('silver') || label.includes('au') || label.includes('ag')
 }
 
 function CustomerSource({ snapshot }: { snapshot: TodaySnapshot }) {

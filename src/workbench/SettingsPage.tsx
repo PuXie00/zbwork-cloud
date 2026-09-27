@@ -62,19 +62,12 @@ export function SettingsPage() {
         <Button type="button" tone="ghost" onClick={() => void handleCopy()}>{copied ? '已复制 Cursor 配置' : '复制 Cursor MCP 配置'}</Button>
       </section>
       <section className="grid gap-3">
-        <h2 className="font-medium">云端 CRM</h2>
-        <Field label="Base URL"><TextInput value={form.crmBaseUrl} onChange={event => setForm({ ...form, crmBaseUrl: event.target.value })} placeholder="https://crm.example.com/api" /></Field>
-        <Field label="鉴权">
-          <select className="w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm" value={form.crmAuthType} onChange={event => setForm({ ...form, crmAuthType: event.target.value as Settings['crmAuthType'] })} aria-label="鉴权方式">
-            <option value="bearer">Bearer</option>
-            <option value="header">自定义头</option>
-          </select>
-        </Field>
-        <Field label="头名称"><TextInput value={form.crmHeaderName} onChange={event => setForm({ ...form, crmHeaderName: event.target.value })} /></Field>
-        <Field label="密钥"><TextInput type="password" value={form.crmToken} onChange={event => setForm({ ...form, crmToken: event.target.value })} aria-label="CRM 密钥" /></Field>
-        <Field label="客户列表路径"><TextInput value={form.crmCustomersPath} onChange={event => setForm({ ...form, crmCustomersPath: event.target.value })} /></Field>
-        <Field label="客户详情路径"><TextInput value={form.crmCustomerPath} onChange={event => setForm({ ...form, crmCustomerPath: event.target.value })} /></Field>
-        <Field label="超时（毫秒）"><TextInput type="number" value={form.crmTimeoutMs} onChange={event => setForm({ ...form, crmTimeoutMs: Number(event.target.value) })} /></Field>
+        <h2 className="font-medium">云端账号</h2>
+        <p className="text-sm text-stone-600">填写公司后台的用户名和密码。登录成功后会记住会话，过期才重新登录。这里不连接邮件，也不连接 WhatsApp。</p>
+        <Field label="云端地址"><TextInput value={form.crmBaseUrl} onChange={event => setForm({ ...form, crmBaseUrl: event.target.value })} placeholder="https://admin.silverbene.com" aria-label="云端地址" /></Field>
+        <Field label="用户名"><TextInput value={form.crmUsername} onChange={event => setForm({ ...form, crmUsername: event.target.value })} aria-label="云端用户名" autoComplete="username" /></Field>
+        <Field label="密码"><TextInput type="password" value={form.crmPassword} onChange={event => setForm({ ...form, crmPassword: event.target.value })} aria-label="云端密码" autoComplete="current-password" /></Field>
+        <Field label="超时（毫秒）"><TextInput type="number" value={form.crmTimeoutMs} onChange={event => setForm({ ...form, crmTimeoutMs: Number(event.target.value) })} aria-label="云端超时" /></Field>
       </section>
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" checked={form.openAtLogin} onChange={event => setForm({ ...form, openAtLogin: event.target.checked })} />
